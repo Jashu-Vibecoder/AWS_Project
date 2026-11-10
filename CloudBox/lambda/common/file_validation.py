@@ -30,14 +30,15 @@ def validate_upload(body):
     raw_name = body.get("file_name")
     if not isinstance(raw_name, str) or not raw_name.strip() or len(raw_name) > 255:
         raise ValueError("Invalid filename")
-    raw_name = raw_name.replace("\\", "/").rsplit("/", 1)[-1].strip()
-    extension = raw_name.rsplit(".", 1)[-1].lower() if "." in raw_name else ""
+    raw_name = raw_name.replace("\\", "/").rsplit("/", 1)[-1]
+    file_name = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", raw_name).strip()
+    if not file_name or file_name in {".", ".."}:
+        raise ValueError("Invalid filename")
+
+    extension = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
     if extension not in CONTENT_TYPES:
         raise ValueError("Unsupported file type")
 
-    file_name = re.sub(r"[^A-Za-z0-9._-]+", "_", raw_name).strip("._")
-    if not file_name:
-        raise ValueError("Invalid filename")
     content_type = CONTENT_TYPES[extension]
     requested_type = body.get("file_type")
     if requested_type not in (None, "", "application/octet-stream", content_type):

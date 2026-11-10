@@ -7,3 +7,5 @@ __pycache__/
 .pytest_cache/
 deployment/out/
 .aws-sam/
+.sam-cli/
+.tmp/

@@ -85,6 +85,17 @@ class LambdaHandlerTests(unittest.TestCase):
         self.assertTrue(data["s3_key"].startswith("uploads/"))
         self.assertEqual(sign.call_args.args[1:], ("text/plain", 12))
 
+    def test_upload_url_preserves_safe_unicode_filename_and_removes_path_controls(self):
+        with patch.object(upload_url, "create_upload_url", return_value="https://signed.example"):
+            response = upload_url.handler({"body": json.dumps({
+                "file_name": "C:\\fakepath\\R\u00e9sum\u00e9 final\n.txt",
+                "file_type": "text/plain",
+                "file_size": 12,
+            })}, None)
+
+        self.assertEqual(response["statusCode"], 200)
+        self.assertEqual(body(response)["data"]["file_name"], "R\u00e9sum\u00e9 final.txt")
+
     def test_upload_url_rejects_unsupported_or_oversized_file(self):
         with patch.object(upload_url, "create_upload_url") as sign:
             response = upload_url.handler({"body": json.dumps({

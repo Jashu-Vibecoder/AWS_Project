@@ -44,7 +44,7 @@ Request JSON:
 {"file_name":"notes.txt","file_type":"text/plain","file_size":12}
 ```
 
-Returns `upload_url`, opaque `s3_key`, normalized name/type/size, `expires_in: 300`, method `PUT`, and required `Content-Type` header. Allowed types are configured in `lambda/common/file_validation.py`; maximum size is 25 MiB. Unsupported extensions, mismatched MIME type, invalid name/size, or malformed JSON return 400. The browser must send the returned content type and exact content length when using the presigned PUT.
+Returns `upload_url`, opaque `s3_key`, the original display name without any client path components or control characters, validated type/size, `expires_in: 300`, method `PUT`, and required `Content-Type` header. Allowed types are configured in `lambda/common/file_validation.py`; maximum size is 25 MiB. Unsupported extensions, mismatched MIME type, invalid name/size, or malformed JSON return 400. The browser must send the returned content type and exact content length when using the presigned PUT. Download responses use an ASCII fallback plus a UTF-8 filename parameter so spaces and international characters are preserved.
 
 ### `POST /upload-confirm`
 

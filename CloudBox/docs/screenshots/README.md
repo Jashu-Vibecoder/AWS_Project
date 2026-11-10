@@ -1,6 +1,6 @@
 # Screenshot evidence checklist
 
-No screenshots have been captured or fabricated. Capture each item only after the corresponding real workflow or AWS resource has been verified. Store files in this directory with the suggested names and reference them in `../testing_report.md`.
+No screenshot artifacts are retained. A temporary local desktop capture exposed a horizontal layout overflow; it was removed after the CSS fix and is not evidence of a working backend or AWS deployment. Capture each item only after the corresponding real workflow or AWS resource has been verified. Store files in this directory with the suggested names and reference them in `../testing_report.md`.
 
 ## Application
 

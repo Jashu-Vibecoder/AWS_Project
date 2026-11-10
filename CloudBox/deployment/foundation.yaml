@@ -2,6 +2,8 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: CloudBox network, private MySQL, endpoint path, SSM-managed EC2 backend host, and application secrets. Review costs before deployment.
 
 Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
   com.aws.cloudformation.Context: >-
     This foundational stack creates a VPC across two Availability Zones, two
     public subnets for a single EC2 Flask host with no public inbound rules,
@@ -146,6 +148,8 @@ Resources:
 
   FileArtifactsBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
@@ -162,6 +166,24 @@ Resources:
             Status: Enabled
             Prefix: deploy/releases/
             ExpirationInDays: 30
+
+  FileArtifactsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FileArtifactsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt FileArtifactsBucket.Arn
+              - !Sub '${FileArtifactsBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
 
   PrivateS3Endpoint:
     Type: AWS::EC2::VPCEndpoint

@@ -3,13 +3,16 @@ Transform: AWS::Serverless-2016-10-31
 Description: CloudBox static frontend, private file bucket, HTTP API, and file-operation Lambdas. Deploy only after reviewing AWS costs and the change set.
 
 Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
   com.aws.cloudformation.Context: >-
     This application stack creates two private S3 buckets, one CloudFront
     distribution with OAC and uncached API routes, an HTTP API, a private VPC
     Link integration, and five VPC-attached Lambda functions. The foundation stack provides the VPC,
     EC2 host, RDS, endpoints, and secrets. S3, CloudFront, API Gateway, Lambda,
     RDS, EC2, public IPv4, and interface endpoint resources can incur ongoing
-    charges. Review the change set and pricing before deployment.
+    charges. All buckets reject non-TLS requests. Review the change set and
+    pricing before deployment.
 
 Parameters:
   DatabaseHost:
@@ -80,6 +83,8 @@ Globals:
 Resources:
   FileBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
@@ -101,8 +106,28 @@ Resources:
             ExposedHeaders: [ETag]
             MaxAge: 300
 
+  FileBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FileBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt FileBucket.Arn
+              - !Sub '${FileBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
   FrontendBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
@@ -425,6 +450,16 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt FrontendBucket.Arn
+              - !Sub '${FrontendBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
           - Sid: AllowCloudFrontOACReadOnly
             Effect: Allow
             Principal:
@@ -436,6 +471,21 @@ Resources:
                 AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
 
 Outputs:
+  UploadUrlFunctionName:
+    Description: Generated physical name of the upload URL Lambda function.
+    Value: !Ref UploadUrlFunction
+  ConfirmUploadFunctionName:
+    Description: Generated physical name of the upload confirmation Lambda function.
+    Value: !Ref ConfirmUploadFunction
+  DownloadUrlFunctionName:
+    Description: Generated physical name of the download URL Lambda function.
+    Value: !Ref DownloadUrlFunction
+  DeleteFileFunctionName:
+    Description: Generated physical name of the delete Lambda function.
+    Value: !Ref DeleteFileFunction
+  DatabaseBootstrapFunctionName:
+    Description: Generated physical name of the database bootstrap Lambda function.
+    Value: !Ref DatabaseBootstrapFunction
   FrontendBucketName:
     Description: Private bucket for files under frontend/.
     Value: !Ref FrontendBucket

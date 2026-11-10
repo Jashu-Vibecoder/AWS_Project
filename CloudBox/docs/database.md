@@ -7,7 +7,7 @@ Database: `cloudbox_db`. Table: `files` (InnoDB, utf8mb4 / utf8mb4_unicode_ci).
 | Column | Type | Constraints / purpose |
 |---|---|---|
 | `id` | `INT UNSIGNED` | Primary key, auto increment |
-| `file_name` | `VARCHAR(255)` | Original display/download filename |
+| `file_name` | `VARCHAR(255)` | Original display/download filename after removing client path components and control characters |
 | `s3_key` | `VARCHAR(500)` | Unique opaque S3 object key; never accepted as arbitrary download input |
 | `file_size` | `BIGINT UNSIGNED` | Size in bytes |
 | `file_type` | `VARCHAR(100)` | Validated MIME type |

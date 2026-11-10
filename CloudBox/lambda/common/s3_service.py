@@ -1,6 +1,8 @@
 """S3 operations; credentials come from the Lambda execution role."""
 
 import os
+import re
+from urllib.parse import quote
 
 _S3_CLIENT = None
 
@@ -42,13 +44,17 @@ def get_object_metadata(s3_key):
 
 
 def create_download_url(s3_key, file_name):
-    safe_name = file_name.replace('"', "'").replace("\r", "").replace("\n", "")
+    safe_name = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", str(file_name or "")).strip() or "download"
+    ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", safe_name).strip("._") or "download"
+    encoded_name = quote(safe_name, safe="")
     return _client().generate_presigned_url(
         "get_object",
         Params={
             "Bucket": os.environ["S3_BUCKET_NAME"],
             "Key": s3_key,
-            "ResponseContentDisposition": f'attachment; filename="{safe_name}"',
+            "ResponseContentDisposition": (
+                f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{encoded_name}'
+            ),
         },
         ExpiresIn=300,
         HttpMethod="GET",
