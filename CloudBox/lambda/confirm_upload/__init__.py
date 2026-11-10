@@ -1,0 +1,1 @@
+"""Upload confirmation Lambda package."""

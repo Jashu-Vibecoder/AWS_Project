@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#1b1d21">
+    <title>CloudBox | Sign in</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script src="js/config.js" defer></script>
+    <script defer>
+      window.addEventListener("DOMContentLoaded", () => {
+        const config = window.CLOUDBOX_CONFIG || {};
+        if (!config.authRequired) { window.location.replace("index.html"); return; }
+        const form = document.querySelector("#login-form");
+        const input = document.querySelector("#access-token");
+        const error = document.querySelector("#login-error");
+        if (new URLSearchParams(window.location.search).has("expired")) {
+          error.textContent = "Your session expired or the access token was rejected. Enter it again.";
+        }
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          const value = input.value.trim();
+          if (!value) { error.textContent = "Enter your CloudBox access token."; return; }
+          try { window.sessionStorage.setItem("cloudboxAccessToken", value); }
+          catch (_storageError) { error.textContent = "This browser cannot store a session token."; return; }
+          window.location.replace("index.html");
+        });
+      });
+    </script>
+  </head>
+  <body class="login-page">
+    <main class="login-card">
+      <a class="brand" href="index.html"><span class="brand-mark-text">CB</span><span>CloudBox</span></a>
+      <p class="eyebrow">Private file workspace</p>
+      <h1>Sign in to CloudBox</h1>
+      <p>Enter the access token provided for this single-user demo. It stays in this browser tab and is never saved in the website files.</p>
+      <form id="login-form">
+        <label for="access-token">Access token</label>
+        <input id="access-token" type="password" autocomplete="current-password" required>
+        <p id="login-error" class="form-error" role="alert"></p>
+        <button class="button button-primary" type="submit">Continue</button>
+      </form>
+    </main>
+  </body>
+</html>

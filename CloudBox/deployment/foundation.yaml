@@ -1,0 +1,484 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudBox network, private MySQL, endpoint path, SSM-managed EC2 backend host, and application secrets. Review costs before deployment.
+
+Metadata:
+  com.aws.cloudformation.Context: >-
+    This foundational stack creates a VPC across two Availability Zones, two
+    public subnets for a single EC2 Flask host with no public inbound rules,
+    two private subnets for MySQL, API Gateway VPC Link, and Lambda, an
+    internal Network Load Balancer, a private encrypted single-AZ RDS MySQL
+    database, Secrets Manager and S3 endpoints, a private artifact bucket,
+    and two generated app secrets. It intentionally creates no NAT Gateway.
+    EC2, RDS, NLB, and the Secrets Manager endpoint can incur ongoing charges.
+    RDS deletion retains a snapshot.
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    Description: Small general-purpose EC2 type; verify region availability and current pricing.
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    Description: Small single-AZ MySQL class; verify current eligibility and pricing.
+  DBAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 100
+    Description: Initial encrypted database storage in GiB.
+  VpcCidr:
+    Type: String
+    Default: 10.40.0.0/16
+  PublicSubnetACidr:
+    Type: String
+    Default: 10.40.1.0/24
+  PublicSubnetBCidr:
+    Type: String
+    Default: 10.40.2.0/24
+  PrivateSubnetACidr:
+    Type: String
+    Default: 10.40.11.0/24
+  PrivateSubnetBCidr:
+    Type: String
+    Default: 10.40.12.0/24
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-vpc'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  VpcInternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Ref PublicSubnetACidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-public-a'
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Ref PublicSubnetBCidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-public-b'
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Ref PrivateSubnetACidr
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-private-a'
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Ref PrivateSubnetBCidr
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-private-b'
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcInternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetARouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetBRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+  PrivateSubnetARouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTableA
+  PrivateSubnetBRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTableB
+
+  FileArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireBackendReleaseArchives
+            Status: Enabled
+            Prefix: deploy/releases/
+            ExpirationInDays: 30
+
+  PrivateS3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      VpcEndpointType: Gateway
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      RouteTableIds:
+        - !Ref PublicRouteTable
+        - !Ref PrivateRouteTableA
+        - !Ref PrivateRouteTableB
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CloudBox Lambda network access to MySQL and AWS endpoints
+      VpcId: !Ref Vpc
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CloudBox Flask host; HTTP accepted only from the internal backend NLB
+      VpcId: !Ref Vpc
+  SecretsEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: HTTPS from CloudBox application hosts to Secrets Manager endpoint
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: MySQL access only from CloudBox Lambda and EC2 security groups
+      VpcId: !Ref Vpc
+  DatabaseFromLambdaIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DatabaseSecurityGroup
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      SourceSecurityGroupId: !Ref LambdaSecurityGroup
+  DatabaseFromEC2Ingress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DatabaseSecurityGroup
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      SourceSecurityGroupId: !Ref EC2SecurityGroup
+
+  ApiVpcLinkSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: API Gateway VPC Link to the internal CloudBox NLB
+      VpcId: !Ref Vpc
+
+  BackendNetworkLoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Internal CloudBox Flask NLB; accepts traffic only from the API Gateway VPC Link
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ApiVpcLinkSecurityGroup
+
+  BackendNlbToEc2Ingress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref EC2SecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourceSecurityGroupId: !Ref BackendNetworkLoadBalancerSecurityGroup
+
+  SecretsManagerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      VpcEndpointType: Interface
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.secretsmanager'
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref SecretsEndpointSecurityGroup
+
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Private CloudBox MySQL subnets
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      Engine: mysql
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: !Ref DBAllocatedStorage
+      StorageType: gp3
+      StorageEncrypted: true
+      DBName: cloudbox_db
+      MasterUsername: cloudbox_master
+      ManageMasterUserPassword: true
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups:
+        - !GetAtt DatabaseSecurityGroup.GroupId
+      PubliclyAccessible: false
+      MultiAZ: false
+      BackupRetentionPeriod: 1
+      AutoMinorVersionUpgrade: true
+
+  DatabaseAppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: CloudBox least-privilege database account credentials; initialized by the private CloudFormation bootstrap function.
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"cloudbox_app"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludePunctuation: true
+  ApiAuthSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Single-user CloudBox bearer token for the demo deployment.
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: token
+        PasswordLength: 40
+        ExcludePunctuation: true
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: SSM management and narrowly scoped CloudBox secret/artifact reads.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      Policies:
+        - PolicyName: CloudBoxRuntimeAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DatabaseAppSecret
+                  - !Ref ApiAuthSecret
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub '${FileArtifactsBucket.Arn}/deploy/*'
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+  BackendInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      SubnetId: !Ref PublicSubnetA
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      MetadataOptions:
+        HttpTokens: required
+        HttpEndpoint: enabled
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: 10
+            Encrypted: true
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          dnf install -y python3.12 python3.12-pip nginx unzip
+          useradd --system --create-home --shell /sbin/nologin cloudbox || true
+          install -d -o cloudbox -g cloudbox /opt/cloudbox /opt/cloudbox/releases
+          install -d -m 0750 -o root -g cloudbox /etc/cloudbox
+          cat > /etc/cloudbox/cloudbox.env <<'EOF'
+          DB_HOST=${Database.Endpoint.Address}
+          DB_PORT=3306
+          DB_NAME=cloudbox_db
+          DB_USER=cloudbox_app
+          DB_SECRET_ARN=${DatabaseAppSecret}
+          DB_CONNECT_TIMEOUT=5
+          API_AUTH_REQUIRED=true
+          AUTH_TOKEN_SECRET_ARN=${ApiAuthSecret}
+          AWS_REGION=${AWS::Region}
+          CORS_ALLOWED_ORIGINS=http://localhost:5500,http://127.0.0.1:5500
+          FLASK_DEBUG=false
+          EOF
+          chown root:cloudbox /etc/cloudbox/cloudbox.env
+          chmod 0640 /etc/cloudbox/cloudbox.env
+          cat > /etc/systemd/system/cloudbox-flask.service <<'EOF'
+          [Unit]
+          Description=CloudBox Flask metadata API
+          After=network-online.target
+          Wants=network-online.target
+          [Service]
+          User=cloudbox
+          Group=cloudbox
+          WorkingDirectory=/opt/cloudbox/current
+          EnvironmentFile=/etc/cloudbox/cloudbox.env
+          ExecStart=/opt/cloudbox/venv/bin/gunicorn --workers 2 --bind 127.0.0.1:8000 'backend.app:create_app()'
+          Restart=on-failure
+          RestartSec=5
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          cat > /etc/nginx/conf.d/cloudbox.conf <<'EOF'
+          server {
+            listen 80 default_server;
+            server_name _;
+            location / {
+              proxy_pass http://127.0.0.1:8000;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+            }
+          }
+          EOF
+          systemctl enable nginx
+          systemctl restart nginx
+
+  BackendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref Vpc
+      TargetType: instance
+      Protocol: TCP
+      Port: 80
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: traffic-port
+      HealthCheckPath: /health
+      Matcher:
+        HttpCode: '200'
+      Targets:
+        - Id: !Ref BackendInstance
+          Port: 80
+
+  BackendNetworkLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: network
+      Scheme: internal
+      Subnets:
+        - !Ref PrivateSubnetA
+      SecurityGroups:
+        - !Ref BackendNetworkLoadBalancerSecurityGroup
+      LoadBalancerAttributes:
+        - Key: load_balancing.cross_zone.enabled
+          Value: 'false'
+
+  BackendListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref BackendNetworkLoadBalancer
+      Protocol: TCP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTargetGroup
+
+Outputs:
+  Region:
+    Value: !Ref AWS::Region
+  VpcId:
+    Value: !Ref Vpc
+  LambdaSubnetIds:
+    Value: !Join [',', [!Ref PrivateSubnetA, !Ref PrivateSubnetB]]
+  LambdaSecurityGroupId:
+    Value: !Ref LambdaSecurityGroup
+  DatabaseHost:
+    Value: !GetAtt Database.Endpoint.Address
+  DatabasePort:
+    Value: !GetAtt Database.Endpoint.Port
+  DatabaseSecretArn:
+    Value: !Ref DatabaseAppSecret
+  DatabaseMasterSecretArn:
+    Value: !GetAtt Database.MasterUserSecret.SecretArn
+  ApiAuthSecretArn:
+    Value: !Ref ApiAuthSecret
+  BackendInstanceId:
+    Value: !Ref BackendInstance
+  ApiVpcLinkSubnetIds:
+    Value: !Join [',', [!Ref PrivateSubnetA, !Ref PrivateSubnetB]]
+  ApiVpcLinkSecurityGroupId:
+    Value: !Ref ApiVpcLinkSecurityGroup
+  BackendListenerArn:
+    Value: !Ref BackendListener
+  FileArtifactsBucketName:
+    Value: !Ref FileArtifactsBucket

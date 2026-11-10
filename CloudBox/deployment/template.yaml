@@ -1,0 +1,459 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: CloudBox static frontend, private file bucket, HTTP API, and file-operation Lambdas. Deploy only after reviewing AWS costs and the change set.
+
+Metadata:
+  com.aws.cloudformation.Context: >-
+    This application stack creates two private S3 buckets, one CloudFront
+    distribution with OAC and uncached API routes, an HTTP API, a private VPC
+    Link integration, and five VPC-attached Lambda functions. The foundation stack provides the VPC,
+    EC2 host, RDS, endpoints, and secrets. S3, CloudFront, API Gateway, Lambda,
+    RDS, EC2, public IPv4, and interface endpoint resources can incur ongoing
+    charges. Review the change set and pricing before deployment.
+
+Parameters:
+  DatabaseHost:
+    Type: String
+    Description: Private RDS MySQL endpoint hostname (no scheme or port).
+  DatabaseSecretArn:
+    Type: String
+    Description: Secrets Manager ARN with a JSON password field for the least-privilege CloudBox DB user.
+  DatabaseMasterSecretArn:
+    Type: String
+    Description: RDS-managed master secret ARN used only by the private schema bootstrap function.
+  DatabaseUser:
+    Type: String
+    Default: cloudbox_app
+    Description: Least-privilege MySQL application username.
+  DatabaseName:
+    Type: String
+    Default: cloudbox_db
+  LambdaSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets with network access to RDS and the required AWS service endpoints.
+  LambdaSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Lambda security group permitted by the RDS security group on TCP 3306.
+  ApiVpcLinkSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets for the API Gateway VPC Link ENIs.
+  ApiVpcLinkSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group attached to API Gateway VPC Link ENIs.
+  BackendListenerArn:
+    Type: String
+    Description: Internal NLB listener ARN from the foundation stack.
+  AuthTokenSecretArn:
+    Type: String
+    Description: Secrets Manager JSON secret ARN containing a token field for the single-user bearer authentication gate.
+  FrontendOrigin:
+    Type: String
+    Default: https://cloudbox-origin-pending.invalid
+    Description: Exact HTTPS CloudFront origin, tightened by deploy_cloudbox.ps1 after distribution creation.
+  DatabaseBootstrapRevision:
+    Type: String
+    Default: '1'
+    Description: Increment only to reapply the app account password after rotating the database app secret.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 15
+    MemorySize: 128
+    CodeUri: ../lambda/
+    VpcConfig:
+      SubnetIds: !Ref LambdaSubnetIds
+      SecurityGroupIds:
+        - !Ref LambdaSecurityGroupId
+    Environment:
+      Variables:
+        DB_HOST: !Ref DatabaseHost
+        DB_PORT: '3306'
+        DB_NAME: !Ref DatabaseName
+        DB_USER: !Ref DatabaseUser
+        DB_SECRET_ARN: !Ref DatabaseSecretArn
+        DB_CONNECT_TIMEOUT: '5'
+        API_AUTH_REQUIRED: 'true'
+        AUTH_TOKEN_SECRET_ARN: !Ref AuthTokenSecretArn
+        S3_BUCKET_NAME: !Ref FileBucket
+
+Resources:
+  FileBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins:
+              - !Ref FrontendOrigin
+              - http://localhost:5500
+              - http://127.0.0.1:5500
+            AllowedMethods: [GET, PUT, HEAD]
+            AllowedHeaders: [Content-Type]
+            ExposedHeaders: [ETag]
+            MaxAge: 300
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  FrontendOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-frontend-oac'
+        Description: CloudFront-only read access to the private CloudBox frontend bucket
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  CloudBoxApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: '$default'
+      CorsConfiguration:
+        AllowOrigins:
+          - http://localhost:5500
+          - http://127.0.0.1:5500
+        AllowHeaders: [authorization, content-type]
+        AllowMethods: [GET, POST, DELETE, OPTIONS]
+        MaxAge: 600
+
+  ApiVpcLink:
+    Type: AWS::ApiGatewayV2::VpcLink
+    Properties:
+      Name: !Sub '${AWS::StackName}-flask-link'
+      SubnetIds: !Ref ApiVpcLinkSubnetIds
+      SecurityGroupIds:
+        - !Ref ApiVpcLinkSecurityGroupId
+
+  FlaskPrivateIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref CloudBoxApi
+      ConnectionType: VPC_LINK
+      ConnectionId: !Ref ApiVpcLink
+      IntegrationType: HTTP_PROXY
+      IntegrationMethod: ANY
+      IntegrationUri: !Ref BackendListenerArn
+      PayloadFormatVersion: '1.0'
+      RequestParameters:
+        'overwrite:path': '$request.path'
+
+  FlaskHealthRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CloudBoxApi
+      RouteKey: GET /health
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${FlaskPrivateIntegration}'
+  FlaskDashboardRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CloudBoxApi
+      RouteKey: GET /api/dashboard
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${FlaskPrivateIntegration}'
+  FlaskFilesRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CloudBoxApi
+      RouteKey: GET /api/files
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${FlaskPrivateIntegration}'
+  FlaskSearchRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CloudBoxApi
+      RouteKey: GET /api/files/search
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${FlaskPrivateIntegration}'
+
+  UploadUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: upload_url.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - AWSLambdaVPCAccessExecutionRole
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: s3:PutObject
+              Resource: !Sub '${FileBucket.Arn}/uploads/*'
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref AuthTokenSecretArn
+      Events:
+        UploadUrl:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CloudBoxApi
+            Path: /upload-url
+            Method: POST
+
+  ConfirmUploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: confirm_upload.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - AWSLambdaVPCAccessExecutionRole
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:DeleteObject
+              Resource: !Sub '${FileBucket.Arn}/uploads/*'
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DatabaseSecretArn
+                - !Ref AuthTokenSecretArn
+      Events:
+        ConfirmUpload:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CloudBoxApi
+            Path: /upload-confirm
+            Method: POST
+
+  DownloadUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: download_url.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - AWSLambdaVPCAccessExecutionRole
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub '${FileBucket.Arn}/uploads/*'
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DatabaseSecretArn
+                - !Ref AuthTokenSecretArn
+      Events:
+        DownloadUrl:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CloudBoxApi
+            Path: /download-url/{id}
+            Method: GET
+
+  DeleteFileFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: delete_file.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - AWSLambdaVPCAccessExecutionRole
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:DeleteObject
+              Resource: !Sub '${FileBucket.Arn}/uploads/*'
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DatabaseSecretArn
+                - !Ref AuthTokenSecretArn
+      Events:
+        DeleteFile:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CloudBoxApi
+            Path: /files/{id}
+            Method: DELETE
+
+  DatabaseBootstrapRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Private one-purpose role for schema and CloudBox app-user initialization.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole'
+      Policies:
+        - PolicyName: CloudBoxDatabaseBootstrap
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadOnlyBootstrapSecrets
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DatabaseMasterSecretArn
+                  - !Ref DatabaseSecretArn
+              - Sid: BootstrapLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                Resource: '*'
+              - Sid: WriteBootstrapLogEvents
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*:*'
+
+  DatabaseBootstrapFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: db_bootstrap.handler
+      Role: !GetAtt DatabaseBootstrapRole.Arn
+      Timeout: 150
+      MemorySize: 256
+
+  DatabaseBootstrap:
+    Type: Custom::CloudBoxDatabaseBootstrap
+    Properties:
+      ServiceToken: !GetAtt DatabaseBootstrapFunction.Arn
+      DatabaseHost: !Ref DatabaseHost
+      DatabaseMasterSecretArn: !Ref DatabaseMasterSecretArn
+      DatabaseAppSecretArn: !Ref DatabaseSecretArn
+      Revision: !Ref DatabaseBootstrapRevision
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: CloudBox private S3 frontend
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_200
+        Origins:
+          - Id: PrivateFrontendOrigin
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !Ref FrontendOriginAccessControl
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+          - Id: FileApiOrigin
+            DomainName: !Sub '${CloudBoxApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+            CustomOriginConfig:
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+        DefaultCacheBehavior:
+          TargetOriginId: PrivateFrontendOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        CacheBehaviors:
+          - PathPattern: /health
+            TargetOriginId: FileApiOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: 413fdc68-0c36-4e2d-adaf-88f7e9a3b7c0
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+          - PathPattern: /api/*
+            TargetOriginId: FileApiOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+            CachePolicyId: 413fdc68-0c36-4e2d-adaf-88f7e9a3b7c0
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+          - PathPattern: /upload-url
+            TargetOriginId: FileApiOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: 413fdc68-0c36-4e2d-adaf-88f7e9a3b7c0
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+          - PathPattern: /upload-confirm
+            TargetOriginId: FileApiOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: 413fdc68-0c36-4e2d-adaf-88f7e9a3b7c0
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+          - PathPattern: /download-url/*
+            TargetOriginId: FileApiOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: 413fdc68-0c36-4e2d-adaf-88f7e9a3b7c0
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+          - PathPattern: /files/*
+            TargetOriginId: FileApiOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: 413fdc68-0c36-4e2d-adaf-88f7e9a3b7c0
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+          MinimumProtocolVersion: TLSv1.2_2021
+        HttpVersion: http2and3
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOACReadOnly
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${FrontendBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
+
+Outputs:
+  FrontendBucketName:
+    Description: Private bucket for files under frontend/.
+    Value: !Ref FrontendBucket
+  FileBucketName:
+    Description: Private bucket for user objects; upload keys use uploads/<UUID>.
+    Value: !Ref FileBucket
+  CloudFrontUrl:
+    Description: HTTPS URL for the static frontend.
+    Value: !Sub 'https://${CloudFrontDistribution.DomainName}'
+  CloudFrontDistributionId:
+    Description: Distribution ID used by the CloudFront invalidation helper.
+    Value: !Ref CloudFrontDistribution
+  ApiBaseUrl:
+    Description: Direct HTTP API URL for local development and API testing.
+    Value: !Sub 'https://${CloudBoxApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+  CloudFrontApiBaseUrl:
+    Description: CloudFront URL that proxies Flask and API Gateway routes on the same site origin.
+    Value: !Sub 'https://${CloudFrontDistribution.DomainName}'
+  Region:
+    Description: Region receiving these regional resources.
+    Value: !Ref AWS::Region
