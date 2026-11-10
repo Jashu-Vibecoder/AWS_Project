@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101b35">
+    <meta name="description" content="A simple, secure place to organize your files.">
+    <title>CloudBox — Your files, in one place</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script src="js/app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Main navigation">
+        <a class="brand" href="#overview" aria-label="CloudBox home">
+          <span class="brand-mark" aria-hidden="true">C</span>
+          <span>CloudBox</span>
+        </a>
+
+        <p class="nav-label">Workspace</p>
+        <nav class="nav-list" aria-label="Workspace">
+          <button class="nav-link is-active" type="button" data-view="overview"><span aria-hidden="true">▦</span> Overview</button>
+          <button class="nav-link" type="button" data-view="all"><span aria-hidden="true">▤</span> All files</button>
+          <button class="nav-link" type="button" data-view="recent"><span aria-hidden="true">◷</span> Recent</button>
+        </nav>
+
+        <div class="sidebar-spacer"></div>
+        <section class="plan-card" aria-labelledby="plan-title">
+          <div class="plan-top"><span class="plan-icon" aria-hidden="true">☁</span><span class="demo-tag">LOCAL DEMO</span></div>
+          <h2 id="plan-title">Storage overview</h2>
+          <p><strong id="storage-sidebar">0 B</strong> used in this session</p>
+          <div class="storage-track" role="progressbar" aria-label="Demo storage used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="storage-progress"></span></div>
+          <small>Files stay in this browser. Nothing is sent to AWS in this phase.</small>
+        </section>
+        <div class="sidebar-user"><span class="user-avatar" aria-hidden="true">Y</span><span><strong>Your workspace</strong><small>Single-user demo</small></span></div>
+      </aside>
+
+      <main class="main-content" id="overview">
+        <header class="topbar">
+          <div class="breadcrumb"><span>Workspace</span><span aria-hidden="true">/</span><strong id="breadcrumb-current">Overview</strong></div>
+          <div class="topbar-actions">
+            <label class="search-box"><span aria-hidden="true">⌕</span><span class="sr-only">Search files</span><input id="search-input" type="search" placeholder="Search files" autocomplete="off"><kbd>Ctrl K</kbd></label>
+            <span class="connection-pill"><span class="status-dot"></span> Local demo</span>
+          </div>
+        </header>
+
+        <section class="page-intro" aria-labelledby="page-title">
+          <div><p class="eyebrow">YOUR PERSONAL WORKSPACE</p><h1 id="page-title">Your files, in one place.</h1><p class="intro-copy">A clear view of everything you’ve added to CloudBox.</p></div>
+          <button class="button button-primary" id="upload-button" type="button"><span aria-hidden="true">＋</span> Upload files</button>
+        </section>
+
+        <section class="stats-grid" aria-label="File statistics">
+          <article class="stat-card"><div class="stat-heading"><span>Total files</span><span class="stat-icon blue" aria-hidden="true">▤</span></div><strong class="stat-value" id="total-files">0</strong><span class="stat-note" id="total-files-note">Ready for your first file</span></article>
+          <article class="stat-card"><div class="stat-heading"><span>Storage used</span><span class="stat-icon violet" aria-hidden="true">◴</span></div><strong class="stat-value" id="total-storage">0 B</strong><span class="stat-note">This browser session</span></article>
+          <article class="stat-card"><div class="stat-heading"><span>File types</span><span class="stat-icon mint" aria-hidden="true">◫</span></div><strong class="stat-value" id="type-count">0</strong><span class="stat-note">Different formats</span></article>
+        </section>
+
+        <section class="content-grid">
+          <article class="panel upload-panel" aria-labelledby="upload-title">
+            <div class="panel-heading"><div><p class="eyebrow">ADD TO YOUR WORKSPACE</p><h2 id="upload-title">Upload a file</h2></div><span class="panel-icon" aria-hidden="true">↥</span></div>
+            <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Choose files or drop them here">
+              <span class="upload-symbol" aria-hidden="true">↥</span>
+              <strong>Drop files here</strong>
+              <span>or <button class="text-button" id="choose-files" type="button">browse your device</button></span>
+              <small>Up to 25 MB · PDF, images, office files, text and ZIP</small>
+            </div>
+            <input class="sr-only" id="file-input" type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.md,.csv,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip">
+            <p class="upload-footnote"><span class="secure-icon" aria-hidden="true">◇</span> Local preview only. Cloud upload will be connected in a later phase.</p>
+          </article>
+
+          <article class="panel types-panel" aria-labelledby="types-title">
+            <div class="panel-heading"><div><p class="eyebrow">AT A GLANCE</p><h2 id="types-title">File types</h2></div><span class="panel-icon soft" aria-hidden="true">◫</span></div>
+            <div class="type-list" id="type-list"></div>
+          </article>
+        </section>
+
+        <section class="panel files-panel" aria-labelledby="files-title">
+          <div class="files-heading"><div><p class="eyebrow">YOUR LIBRARY</p><h2 id="files-title">Files <span class="count-badge" id="visible-count">0</span></h2></div><div class="file-controls"><div class="filter-tabs" role="group" aria-label="Filter files"><button type="button" class="filter-tab is-selected" data-filter="all">All files</button><button type="button" class="filter-tab" data-filter="recent">Recent</button></div><label class="sort-select"><span class="sr-only">Sort files</span><select id="sort-select"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="name">Name A–Z</option><option value="size">Largest first</option></select></label></div></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th scope="col">Name</th><th scope="col">File type</th><th scope="col">Size</th><th scope="col">Added</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+              <tbody id="file-rows"></tbody>
+            </table>
+            <div class="empty-state" id="empty-state" hidden><span class="empty-icon" aria-hidden="true">▤</span><h3 id="empty-title">Your workspace is ready</h3><p id="empty-copy">Upload a file to see it here.</p><button class="button button-secondary" id="empty-upload" type="button">Choose a file</button></div>
+          </div>
+        </section>
+        <footer class="page-footer"><span>CloudBox <span aria-hidden="true">·</span> Phase 1 local demo</span><span>Files in this session are stored only in your browser.</span></footer>
+      </main>
+    </div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
